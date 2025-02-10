@@ -213,22 +213,50 @@ app.post('/upload-kyc', verifyToken, upload.fields([
 });
 
 // 5. Check KYC Status (Protected Route)
+// 5. Check KYC Status (Protected Route) & Notify via Email
 app.get('/kyc-status/:user_id', verifyToken, (req, res) => {
   const { user_id } = req.params;
 
-  db.query('SELECT status FROM kyc WHERE user_id = ?', [user_id], (err, results) => {
-    if (err) {
-      console.error('Database error:', err);
-      return res.status(500).json({ error: 'Database error' });
-    }
+  db.query(
+    'SELECT kyc.status, users.email FROM kyc JOIN users ON kyc.user_id = users.id WHERE kyc.user_id = ?',
+    [user_id],
+    (err, results) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
 
-    if (results.length === 0) {
-      return res.status(404).json({ error: 'KYC record not found' });
-    }
+      if (results.length === 0) {
+        return res.status(404).json({ error: 'KYC record not found' });
+      }
 
-    res.status(200).json({ status: results[0].status });
-  });
+      const { status, email } = results[0];
+
+      // Send Email Notification
+      const mailOptions = {
+        from: process.env.MAIL,
+        to: email,
+        subject: 'SecureX-ID KYC Status Update',
+        text: `Dear User,
+
+        Your KYC verification status has been updated: ${status}
+
+        If you have any questions, please contact our support team.
+
+        Best regards,
+        SecureX-ID Team`,
+      };
+
+      mailAuth.sendMail(mailOptions, (error, info) => {
+        if (error) console.error('Error sending email:', error);
+        else console.log('KYC Status Email Sent:', info.response);
+      });
+
+      res.status(200).json({ status });
+    }
+  );
 });
+
 
 // Start Server
 app.listen(port, () => {
