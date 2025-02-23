@@ -8,6 +8,8 @@ const dotenv = require('dotenv');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const Tesseract = require('tesseract.js');
+
 
 dotenv.config();
 const app = express();
@@ -151,6 +153,7 @@ app.post('/verify-otp', (req, res) => {
   );
 });
 
+
 // 3. Login (JWT Token)
 app.post('/login', async (req, res) => {
   const { email, password } = req.body;
@@ -180,82 +183,147 @@ app.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Invalid email or password' });
     }
 
-    const token = jwt.sign({ user_id: user.id, email: user.email }, process.env.JWT_SECRET, { expiresIn: '24h' });
+    // Include is_admin in JWT
+    const token = jwt.sign(
+      { user_id: user.id, email: user.email, is_admin: user.is_admin },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
 
-    res.status(200).json({ message: 'Login successful', token });
+    res.status(200).json({ message: 'Login successful', token, is_admin: user.is_admin });
   });
 });
 
-// 4. Upload KYC Documents (Protected Route)
+
+// 5. Check KYC Status (Protected Route)
+app.get('/kyc-status/:user_id', verifyToken, (req, res) => {
+  const { user_id } = req.params;
+
+  db.query('SELECT status FROM kyc WHERE user_id = ?', [user_id], (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    if (results.length === 0) {
+      return res.status(404).json({ error: 'KYC record not found' });
+    }
+
+    res.status(200).json({ status: results[0].status });
+  });
+});
+
+
+////OCR START FROM HERE 
+
+// Helper function for OCR
+//with new entry wallet address 
+const extractTextFromImage = async (imagePath) => {
+  try {
+    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
+    return text.trim();
+  } catch (error) {
+    console.error('OCR Error:', error);
+    return null;
+  }
+};
+
+// 4. Upload KYC Documents (Protected Route with OCR and Wallet Address)
 app.post('/upload-kyc', verifyToken, upload.fields([
   { name: 'front_id', maxCount: 1 },
   { name: 'back_id', maxCount: 1 },
   { name: 'selfie_with_id', maxCount: 1 },
-]), (req, res) => {
-  const { user_id } = req.body;
+]), async (req, res) => {
+  const { user_id, wallet_address } = req.body;
   const files = req.files;
 
-  if (!user_id || !files.front_id || !files.back_id || !files.selfie_with_id) {
+  if (!user_id || !wallet_address || !files.front_id || !files.back_id || !files.selfie_with_id) {
     return res.status(400).json({ error: 'All fields and files are required' });
   }
 
-  db.query(
-    'INSERT INTO kyc (user_id, front_id, back_id, selfie_with_id) VALUES (?, ?, ?, ?)',
-    [user_id, files.front_id[0].path, files.back_id[0].path, files.selfie_with_id[0].path],
-    (err) => {
-      if (err) {
-        console.error('Database error:', err);
-        return res.status(500).json({ error: 'Database error' });
+  try {
+    // Extract text using OCR
+    const frontIdText = await extractTextFromImage(files.front_id[0].path);
+    const backIdText = await extractTextFromImage(files.back_id[0].path);
+    
+    console.log('Extracted Front ID Text:', frontIdText);
+    console.log('Extracted Back ID Text:', backIdText);
+    console.log('Wallet Address:', wallet_address);
+
+    // Save details into database
+    db.query(
+      'INSERT INTO kyc (user_id, front_id, back_id, selfie_with_id, front_id_text, back_id_text, wallet_address) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [user_id, files.front_id[0].path, files.back_id[0].path, files.selfie_with_id[0].path, frontIdText, backIdText, wallet_address],
+      (err) => {
+        if (err) {
+          console.error('Database error:', err);
+          return res.status(500).json({ error: 'Database error' });
+        }
+        res.status(201).json({ message: 'KYC documents uploaded, text extracted, and wallet address saved successfully' });
       }
-      res.status(201).json({ message: 'KYC documents uploaded successfully' });
-    }
-  );
+    );
+  } catch (error) {
+    console.error('Error processing OCR:', error);
+    res.status(500).json({ error: 'Error extracting text from images' });
+  }
 });
 
-// 5. Check KYC Status (Protected Route)
-// 5. Check KYC Status (Protected Route) & Notify via Email
-app.get('/kyc-status/:user_id', verifyToken, (req, res) => {
-  const { user_id } = req.params;
 
-  db.query(
-    'SELECT kyc.status, users.email FROM kyc JOIN users ON kyc.user_id = users.id WHERE kyc.user_id = ?',
-    [user_id],
-    (err, results) => {
-      if (err) {
+// 6. Update KYC Status (Admin Only)
+app.post('/update-kyc-status', verifyToken, (req, res) => {
+  const { user_id, status } = req.body;
+
+  // Ensure only admins can update KYC status
+  if (!req.user.is_admin) {
+    return res.status(403).json({ error: 'Access denied. Admins only.' });
+  }
+
+  if (!user_id || !status) {
+    return res.status(400).json({ error: 'User ID and status are required' });
+  }
+
+  db.query('UPDATE kyc SET status = ? WHERE user_id = ?', [status, user_id], (err, result) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'KYC record not found' });
+    }
+
+    // Fetch user email
+    db.query('SELECT email FROM users WHERE id = ?', [user_id], (err, users) => {
+      if (err || users.length === 0) {
         console.error('Database error:', err);
-        return res.status(500).json({ error: 'Database error' });
+        return res.status(500).json({ error: 'Error fetching user email' });
       }
 
-      if (results.length === 0) {
-        return res.status(404).json({ error: 'KYC record not found' });
-      }
+      const userEmail = users[0].email;
 
-      const { status, email } = results[0];
-
-      // Send Email Notification
+      // Send KYC status update email
       const mailOptions = {
         from: process.env.MAIL,
-        to: email,
+        to: userEmail,
         subject: 'SecureX-ID KYC Status Update',
-        text: `Dear User,
-
-        Your KYC verification status has been updated: ${status}
-
-        If you have any questions, please contact our support team.
-
-        Best regards,
-        SecureX-ID Team`,
+        text: `Dear User,\n\nYour KYC status has been updated to: ${status}.\n\nBest Regards,\nSecureX-ID Team`,
       };
 
       mailAuth.sendMail(mailOptions, (error, info) => {
-        if (error) console.error('Error sending email:', error);
-        else console.log('KYC Status Email Sent:', info.response);
+        if (error) {
+          console.error('Error sending email:', error);
+          return res.status(500).json({ error: 'Error sending email' });
+        }
+        console.log('Email sent:', info.response);
+        res.status(200).json({ message: 'KYC status updated and email sent successfully' });
       });
-
-      res.status(200).json({ status });
-    }
-  );
+    });
+  });
 });
+
+
+//onchain- hash
+
 
 
 // Start Server
