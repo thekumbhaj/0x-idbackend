@@ -294,6 +294,59 @@ const tesseract = require('node-tesseract-ocr');
 const fs = require('fs');
 
 // Add this helper function at the top
+const extractAddress = (text, documentType) => {
+  const addressPatterns = {
+      'aadhaar': [
+          // Complete address pattern with optional S/O and door number
+          /(?:Address\s*:\s*(?:S\/O:?[^,]*,)?\s*(?:\d+\/\d+)?.*?)(?=help@|uidai\.gov\.in|$)/i,
+          // Pattern for S/O with address
+          
+          /S\/O:?\s*[^,]+,\s*(?:\d+\/\d+)?.*?(?=help@|uidai\.gov\.in|$)/i,
+          // Pattern for direct address with door number
+          /(?:\d+\/\d+)[^]*?(?=help@|uidai\.gov\.in|$)/i
+      ],
+      'dl': [
+          /(?:Address|पता)[\s:]+([^\n]+(?:\n[^\n]+)*?)(?=\n\s*\n|\n[A-Z]|$)/i,
+          /(?:Permanent\s+Address|Present\s+Address)[\s:]+([^\n]+(?:\n[^\n]+)*?)(?=\n\s*\n|\n[A-Z]|$)/i
+      ]
+  };
+
+  const patterns = addressPatterns[documentType] || [];
+  let address = null;
+
+  for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match && (match[1] || match[0])) {
+          // Clean up the extracted address
+          let extractedAddress = (match[1] || match[0])
+              .replace(/(?:Address\s*:|पता\s*:|[Cc]\/[Oo]\s*:|S\/O\s*:|D\/O\s*:|W\/O\s*:)/ig, '')
+              .replace(/\r\n/g, ', ')
+              .replace(/\n/g, ', ')
+              .replace(/,\s*,/g, ',')
+              .replace(/\s+/g, ' ')
+              .replace(/,\s*$/, '')
+              .trim();
+
+          // Split by commas and clean each part
+          const addressParts = extractedAddress
+              .split(',')
+              .map(part => part.trim())
+              .filter(part => (
+                  part && 
+                  !part.match(/help@|uidai\.gov\.in/) && 
+                  part.length > 1
+              ));
+
+          // Rejoin with proper formatting
+          address = addressParts.join(', ');
+          
+          if (address) break;
+      }
+  }
+
+  return address;
+};
+
 const detectSide = (text, documentType) => {
     // Common indicators for each document type
     const indicators = {
@@ -329,58 +382,6 @@ const detectSide = (text, documentType) => {
     }
 
     return 'Unknown Side';
-};
-
-const extractAddress = (text, documentType) => {
-    const addressPatterns = {
-        'aadhaar': [
-            // Complete address pattern with optional S/O and door number
-            /(?:Address\s*:\s*(?:S\/O:?[^,]*,)?\s*(?:\d+\/\d+)?.*?)(?=help@|uidai\.gov\.in|$)/i,
-            // Pattern for S/O with address
-            /S\/O:?\s*[^,]+,\s*(?:\d+\/\d+)?.*?(?=help@|uidai\.gov\.in|$)/i,
-            // Pattern for direct address with door number
-            /(?:\d+\/\d+)[^]*?(?=help@|uidai\.gov\.in|$)/i
-        ],
-        'dl': [
-            /(?:Address|पता)[\s:]+([^\n]+(?:\n[^\n]+)*?)(?=\n\s*\n|\n[A-Z]|$)/i,
-            /(?:Permanent\s+Address|Present\s+Address)[\s:]+([^\n]+(?:\n[^\n]+)*?)(?=\n\s*\n|\n[A-Z]|$)/i
-        ]
-    };
-
-    const patterns = addressPatterns[documentType] || [];
-    let address = null;
-
-    for (const pattern of patterns) {
-        const match = text.match(pattern);
-        if (match && (match[1] || match[0])) {
-            // Clean up the extracted address
-            let extractedAddress = (match[1] || match[0])
-                .replace(/(?:Address\s*:|पता\s*:|[Cc]\/[Oo]\s*:|S\/O\s*:|D\/O\s*:|W\/O\s*:)/ig, '')
-                .replace(/\r\n/g, ', ')
-                .replace(/\n/g, ', ')
-                .replace(/,\s*,/g, ',')
-                .replace(/\s+/g, ' ')
-                .replace(/,\s*$/, '')
-                .trim();
-
-            // Split by commas and clean each part
-            const addressParts = extractedAddress
-                .split(',')
-                .map(part => part.trim())
-                .filter(part => (
-                    part && 
-                    !part.match(/help@|uidai\.gov\.in/) && 
-                    part.length > 1
-                ));
-
-            // Rejoin with proper formatting
-            address = addressParts.join(', ');
-            
-            if (address) break;
-        }
-    }
-
-    return address;
 };
 
 // Helper functions for document-specific extraction
@@ -421,19 +422,16 @@ const extractAadhaarInfo = (text) => {
             }
         }
     }
-
     const side = detectSide(text, 'aadhaar');
     const address = side === 'Back Side' ? extractAddress(text, 'aadhaar') : null;
-
     return {
         documentType: 'Aadhaar Card',
-        side: side,
+        side: detectSide(text, 'aadhaar'),
         aadhaarNumber: (text.match(/\d{4}\s\d{4}\s\d{4}/) || [null])[0],
         name: name,
         dateOfBirth: (text.match(/(?<=DOB\s*:|Date of Birth\s*:|जन्म\s*:).*?(?=\n|MALE|FEMALE)/is) || [null])[0]?.trim(),
         gender: (text.match(/MALE|FEMALE/i) || [null])[0],
-        address: address,
-        isBackSide: side === 'Back Side'
+        address: address
     };
 };
 
@@ -514,13 +512,12 @@ const extractDLInfo = (text) => {
     if (dates.length > 0) {
         validUntil = dates[dates.length - 1];
     }
-
     const side = detectSide(text, 'dl');
     const address = side === 'Front Side' ? extractAddress(text, 'dl') : null;
 
     return {
         documentType: 'Driving License',
-        side: side,
+        side: detectSide(text, 'dl'),
         licenseNumber: licenseNumber,
         name: name,
         dateOfBirth: dob,
@@ -530,85 +527,73 @@ const extractDLInfo = (text) => {
 };
 
 const detectDocumentType = (text) => {
-    const lowerText = text.toLowerCase();
-    
-    // Check for Aadhaar first (improved detection)
-    if (text.match(/\d{4}\s\d{4}\s\d{4}/) || 
-        lowerText.includes('aadhaar') ||
-        lowerText.includes('uid') ||
-        // Add back side specific patterns
-        lowerText.includes('help@uidai.gov.in') ||
-        lowerText.includes('mera aadhaar') ||
-        lowerText.includes('address:') ||
-        (lowerText.includes('s/o:') && lowerText.includes('address')) ||
-        lowerText.includes('uidai.gov.in')) {
-        return 'aadhaar';
-    }
-    
-    // Rest of the document type checks
-    if (lowerText.includes('driving licence') || 
-        lowerText.includes('driving license') || 
-        text.match(/[A-Z]{2}\d{2}[A-Z0-9]\d{7,}/)) {
+    // Check for driving license first (most specific)
+    if (text.toLowerCase().includes('driving licence') || 
+        text.toLowerCase().includes('driving license') || 
+        text.match(/TN\d{2}Z\d{8}/)) {
         return 'dl';
     }
-    
-    if (lowerText.includes('passport')) {
+    // Check for Aadhaar
+    if (text.match(/\d{4}\s\d{4}\s\d{4}/) || 
+        text.toLowerCase().includes('aadhaar')) {
+        return 'aadhaar';
+    }
+    // Check for passport
+    if (text.toLowerCase().includes('passport')) {
         return 'passport';
     }
-    
     return 'unknown';
 };
 
 const processImage = async (imagePath) => {
-    if (!imagePath) {
-        throw new Error('No image path provided.');
+  if (!imagePath) {
+    throw new Error('No image path provided.');
+  }
+
+  console.log('Processing image path:', imagePath);
+
+  if (!fs.existsSync(imagePath)) {
+    console.error('File does not exist:', imagePath);
+    throw new Error('File does not exist.');
+  }
+
+  const config = {
+    lang: 'eng',
+    oem: 1,
+    psm: 3,
+  };
+
+  try {
+    const text = await tesseract.recognize(imagePath, config);
+    console.log('OCR Result:', text);
+
+    const documentType = detectDocumentType(text);
+    let extractedInfo;
+
+    switch (documentType) {
+      case 'aadhaar':
+        extractedInfo = extractAadhaarInfo(text);
+        break;
+      case 'passport':
+        extractedInfo = extractPassportInfo(text);
+        break;
+      case 'dl':
+        extractedInfo = extractDLInfo(text);
+        break;
+      default:
+        extractedInfo = { error: 'Unknown document type', fullText: text };
     }
 
-    console.log('Processing image path:', imagePath);
-
-    if (!fs.existsSync(imagePath)) {
-        console.error('File does not exist:', imagePath);
-        throw new Error('File does not exist.');
-    }
-
-    const config = {
-        lang: 'eng',
-        oem: 1,
-        psm: 3,
+    return {
+      ...extractedInfo,
+      fullText: text
     };
-
-    try {
-        const text = await tesseract.recognize(imagePath, config);
-        console.log('OCR Result:', text);
-
-        const documentType = detectDocumentType(text);
-        let extractedInfo;
-
-        switch (documentType) {
-            case 'aadhaar':
-                extractedInfo = extractAadhaarInfo(text);
-                break;
-            case 'passport':
-                extractedInfo = extractPassportInfo(text);
-                break;
-            case 'dl':
-                extractedInfo = extractDLInfo(text);
-                break;
-            default:
-                extractedInfo = { error: 'Unknown document type', fullText: text };
-        }
-
-        return {
-            ...extractedInfo,
-            fullText: text // Include full text for debugging
-        };
-    } catch (err) {
-        console.error('Error during OCR processing:', err);
-        throw new Error('Error processing image.');
-    }
+  } catch (err) {
+    console.error('Error during OCR processing:', err);
+    throw new Error('Error processing image.');
+  }
 };
 
-// module.exports = { processImage };
 // <-------------------------------------------------------------------------------------------------->
 // Assuming verifyToken and upload middleware are defined elsewhere
 app.post(
@@ -648,7 +633,8 @@ app.post(
 
     
     const backData = {
-        address: backResult.address    };
+        address: extractAddress(backResult.address)
+    };
 
       // Set raw text
       const frontText = frontResult.fullText;
