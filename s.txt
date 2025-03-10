@@ -1,0 +1,5 @@
+input as Janakiraman
+
+f_txt ={"text":"GnEeErTerT\r\n--GOVERNMENTOF INDIA\r\nouster &\r\Janakiraman K\r\nUns sren/ DOB: 17/03/1986\r\nQues / FEMALE\r\n\r\n5697 0784 6850\r\n\r\nCTT HI WHT, 6TH) Domr_wi rend.\r\n\r\n"}
+
+if input is in f_txt
