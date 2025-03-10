@@ -795,6 +795,35 @@ const getKycAction = (status) => {
   }
 };
 
+
+app.post('/users/:userId/approve', authenticate, async (req, res) => {
+  try {
+      const { userId } = req.params;
+      const user = await User.findById(userId);
+      if (!user) return res.status(404).json({ message: 'User not found' });
+
+      user.kycDetails.status = 'verified';
+      await user.save();
+      res.json({ message: 'User KYC approved', user });
+  } catch (error) {
+      res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+// Reject KYC
+app.post('/users/:userId/reject', authenticate, async (req, res) => {
+  try {
+      const { userId } = req.params;
+      const user = await User.findById(userId);
+      if (!user) return res.status(404).json({ message: 'User not found' });
+
+      user.kycDetails.status = 'rejected';
+      await user.save();
+      res.json({ message: 'User KYC rejected', user });
+  } catch (error) {
+      res.status(500).json({ message: 'Server error', error });
+  }
+});
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
