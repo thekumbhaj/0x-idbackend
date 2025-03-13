@@ -292,6 +292,7 @@ app.post('/login', async (req, res) => {
 
 const tesseract = require('node-tesseract-ocr');
 const fs = require('fs');
+const { status } = require('cli');
 
 // Add this helper function at the top
 const detectSide = (text, documentType) => {
@@ -688,11 +689,13 @@ app.post(
           wallet_address
         ]
       );
+      console.log(frontData , backData)
 
       // Success response
       res.status(201).json({
         message: 'KYC documents processed successfully',
         data: { ...frontData, ...backData }
+        
       });
     } catch (error) {
       console.error('Upload KYC error:', error);
@@ -1155,35 +1158,84 @@ const getKycAction = (status) => {
   }
 };
 
-
-app.post('/users/:userId/approve', authenticate, async (req, res) => {
+// Approve KYC
+app.post('/users/:userId/approve', verifyToken, async (req, res) => {
   try {
-      const { userId } = req.params;
-      const user = await User.findById(userId);
-      if (!user) return res.status(404).json({ message: 'User not found' });
+    
+    const { userId } = req.params;
+    
+    const status = 'verified';
 
-      user.kycDetails.status = 'verified';
-      await user.save();
-      res.json({ message: 'User KYC approved', user });
+    // Check if user exists
+    const [userCheck] = await db.query('SELECT user_id FROM kyc WHERE user_id = ?', [userId]);
+    if (userCheck.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // If user exists, proceed to update the status
+    const [rows] = await db.query('UPDATE kyc SET status = ? WHERE user_id = ?', [status, userId]);
+
+    // Check if the update was successful
+    if (rows.affectedRows === 0) {
+      return res.status(404).json({ message: 'Failed to approve KYC' });
+    }
+
+    res.json({ message: 'User KYC approved' });
   } catch (error) {
-      res.status(500).json({ message: 'Server error', error });
+    console.error(error); // Log the error for debugging purposes
+    res.status(500).json({ message: 'Server error', error });
   }
 });
 
 // Reject KYC
-app.post('/users/:userId/reject', authenticate, async (req, res) => {
+app.post('/users/:userId/reject', verifyToken, async (req, res) => {
   try {
-      const { userId } = req.params;
-      const user = await User.findById(userId);
-      if (!user) return res.status(404).json({ message: 'User not found' });
+    const { userId } = req.params;
 
-      user.kycDetails.status = 'rejected';
-      await user.save();
-      res.json({ message: 'User KYC rejected', user });
+    // Check if user exists
+    const [userCheck] = await db.query('SELECT user_id FROM kyc WHERE user_id = ?', [userId]);
+    if (userCheck.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // If user exists, proceed to update the status
+    const result = await db.query('UPDATE kyc SET status = ? WHERE user_id = ?', ['rejected', userId]);
+
+    // Check if the update was successful
+    if (result[0].affectedRows === 0) {
+      return res.status(404).json({ message: 'Failed to reject KYC' });
+    }
+
+    res.json({ message: 'User KYC rejected' });
   } catch (error) {
-      res.status(500).json({ message: 'Server error', error });
+    console.error(error); // Log the error for debugging purposes
+    res.status(500).json({ message: 'Server error', error });
   }
 });
+
+app.get('/user-role/:userId', verifyToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Query to fetch 'is_admin' from the database for the given user
+    const [user] = await db.query('SELECT is_admin FROM users WHERE id = ?', [userId]);
+
+    if (user.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check the value of 'is_admin' and set the role accordingly
+    const role = user[0].is_admin === 1 ? 'admin' : 'user';
+
+    // Respond with the user's role
+    res.json({ role });
+  } catch (error) {
+    console.error("Error fetching user role:", error);
+    res.status(500).json({ message: 'Server error', error });
+  }
+});
+
+
 // Start Server
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
